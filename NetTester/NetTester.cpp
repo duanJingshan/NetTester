@@ -2,6 +2,7 @@
 //
 
 #include <iostream>
+#include <conio.h>
 #include "winsock.h"
 #include "stdio.h"
 #include "CfgFileParms.h"
@@ -20,50 +21,6 @@ struct threadTimer_t {
 	LARGE_INTEGER llStopTime;
 }sBasicTimer;
 
-struct socket_list {
-	int num;
-	SOCKET sock_array[64];
-};
-
-void init_list(socket_list* list)
-{
-	int i;
-	list->num = 0;
-	for (i = 0; i < 64; i++) {
-		list->sock_array[i] = 0;
-	}
-}
-void insert_list(SOCKET s, socket_list* list)
-{
-	int i;
-	for (i = 0; i < 64; i++) {
-		if (list->sock_array[i] == 0) {
-			list->sock_array[i] = s;
-			list->num += 1;
-			break;
-		}
-	}
-}
-void delete_list(SOCKET s, socket_list* list)
-{
-	int i;
-	for (i = 0; i < 64; i++) {
-		if (list->sock_array[i] == s) {
-			list->sock_array[i] = 0;
-			list->num -= 1;
-			break;
-		}
-	}
-}
-void make_fdlist(socket_list* list, fd_set* fd_list)
-{
-	int i;
-	for (i = 0; i < 64; i++) {
-		if (list->sock_array[i] > 0) {
-			FD_SET(list->sock_array[i], fd_list);
-		}
-	}
-}
 void initTimer()
 {
 	sBasicTimer.iType = 0;
@@ -116,7 +73,7 @@ void code(unsigned long x, char A[], int length)
 {
 	unsigned long test;
 	int i;
-
+	//高位在前
 	test = 1;
 	test = test << (length - 1);
 	for (i = 0; i < length; i++) {
@@ -146,21 +103,103 @@ unsigned long decode(char A[], int length)
 	}
 	return x;
 }
+void print_data_bit(char* A,int length,int iMode)
+{
+	int i,j;
+	char B[8];
+	int lineCount = 0;
+	if(iMode == 0){
+		for (i = 0; i < length; i++) {
+			lineCount++;
+			if (A[i] == 0) {
+				printf("0 ");
+			}
+			else {
+				printf("1 ");
+			}
+			if (lineCount % 8 == 0) {
+				printf(" ");
+			}
+			if (lineCount >= 40) {
+				printf("\n");
+				lineCount = 0;
+			}
+		}
+	}
+	else {
+		for (i = 0; i < length; i++) {
+			lineCount++;
+			code(A[i], B, 8);
+			for (j = 0; j < 8; j++) {
+				if (B[j] == 0) {
+					printf("0 ");
+				}
+				else {
+					printf("1 ");
+				}
+				lineCount++;
+			}
+			printf(" ");
+			if (lineCount >= 40) {
+				printf("\n");
+				lineCount = 0;
+			}
+		}
+	}
+}
+//返回值是转出来有多少位
+int ByteArrayToBitArray(char* bitA, int iBitLen, char* byteA, int iByteLen)
+{
+	int i;
+	int len;
+	
+	len = min(iByteLen, iBitLen / 8);
+	for (i = 0; i < len; i++) {
+		//每次编码8位
+		code(byteA[i], &(bitA[i * 8]), 8);
+	}
+	return len * 8;
+}
+//返回值是转出来有多少个字节，如果位流长度不是8位整数倍，则最后1字节不满
+int BitArrayToByteArray(char* bitA, int iBitLen, char* byteA, int iByteLen)
+{
+	int i;
+	int len;
+	int retLen;
+
+	len = min(iByteLen * 8, iBitLen );
+	if (iBitLen > iByteLen * 8) {
+		//截断转换
+		retLen = iByteLen;
+	}
+	else {
+		if (iBitLen % 8 != 0)
+			retLen = iBitLen / 8 + 1;
+		else
+			retLen = iBitLen / 8;
+	}
+
+	for (i = 0; i < len; i += 8) {
+		byteA[i / 8] = (char)decode(bitA + i, 8);
+	}
+	return retLen;
+}
+
 int main(int argc, char* argv[])
 {
 	SOCKET sock;
 	struct sockaddr_in local_addr;
 	struct sockaddr_in upper_addr; 
 	struct sockaddr_in lower_addr[10];  //最多10个下层对象，数组下标是下层实体在编号
+	int lowerMode[10];
 	struct sockaddr_in remote_addr;
 	int lowerNumber;
 	int len;
 	char* buf;
 	char* sendbuf;
 	WSAData wsa;
-	int retval;
-	struct socket_list sock_list;
-	fd_set readfds, writefds, exceptfds;
+	int retval,iSndRetval;
+	fd_set readfds;
 	timeval timeout;
 	int i;
 	unsigned long arg;
@@ -168,11 +207,26 @@ int main(int argc, char* argv[])
 	int port;
 	string s1, s2, s3;
 	int count = 0;
+	int spin = 0;
 	char* cpIpAddr;
+	int iRecvIntfNo;
+	int iWorkMode = 0;
+	int autoSendTime = 10;
+	int autoSendSize = 800;
+	int iSndTotal = 0;
+	int iSndTotalCount = 0;
+	int iSndErrorCount = 0;
+	int iRcvForward = 0;
+	int iRcvForwardCount = 0;
+	int iRcvToUpper = 0;
+	int iRcvToUpperCount = 0;
+	int iRcvUnknownCount = 0;
+	//带外命令接口
+	SOCKET iCmdSock = 0;
+	sockaddr_in local_cmd_addr;
 
 	buf = (char*)malloc(MAX_BUFFER_SIZE);
 	sendbuf = (char*)malloc(MAX_BUFFER_SIZE);
-	buf = (char*)malloc(MAX_BUFFER_SIZE);
 	if (sendbuf == NULL || buf == NULL) {
 		if (sendbuf != NULL) {
 			free(sendbuf);
@@ -226,7 +280,7 @@ int main(int argc, char* argv[])
 	
 	//取本层实体参数，并设置
 	local_addr.sin_family = AF_INET;
-	local_addr.sin_addr.S_un.S_addr = htonl(INADDR_LOOPBACK);
+	local_addr.sin_addr.S_un.S_addr = htonl(INADDR_ANY);
 	retval = cfgParms.getValueInt(&port, CCfgFileParms::BASIC, (char*)"myPort", 0);
 	if (0 > retval) {
 		printf("参数错误\n");
@@ -238,17 +292,32 @@ int main(int argc, char* argv[])
 		return 0;
 
 	}
+	retval = cfgParms.getValueInt(&iWorkMode, CCfgFileParms::BASIC, (char*)"workMode", 0);
+	if (retval == -1) {
+		iWorkMode = 0;
+	}
+	if (iWorkMode / 10 == 1) {
+		retval = cfgParms.getValueInt(&autoSendTime, CCfgFileParms::BASIC, (char*)"autoSendTime", 0);
+		if (retval == -1) {
+			autoSendTime = 10;
+		}
+		retval = cfgParms.getValueInt(&autoSendSize, CCfgFileParms::BASIC, (char*)"autoSendSize", 0);
+		if (retval == -1) {
+			autoSendSize = 800;
+		}
+	}
+
 
 	//读上层实体参数
 	upper_addr.sin_family = AF_INET;
-	cpIpAddr = cfgParms.getValueStr(CCfgFileParms::BASIC, (char*)"upperIPAddr", 0);
+	cpIpAddr = cfgParms.getValueStr(CCfgFileParms::UPPER, (char*)"upperIPAddr", 0);
 	if (cpIpAddr == NULL) {
 		printf("参数错误\n");
 		return 0;
 	}
 	upper_addr.sin_addr.S_un.S_addr = inet_addr(cpIpAddr);
 
-	retval = cfgParms.getValueInt(&port, CCfgFileParms::BASIC, (char*)"upperPort", 0);
+	retval = cfgParms.getValueInt(&port, CCfgFileParms::UPPER, (char*)"upperPort", 0);
 	if (0 > retval) {
 		printf("参数错误\n");
 		return 0;
@@ -279,103 +348,269 @@ int main(int argc, char* argv[])
 			return 0;
 		}
 		lower_addr[i].sin_port = htons(port);
+		//低层接口是Byte或者是bit
+		retval = cfgParms.getValueInt(&(lowerMode[i]), CCfgFileParms::LOWER, (char*)"lowerMode", i);
+		if (0 > retval) {
+			printf("参数错误\n");
+			return 0;
+		}
 	}
-	//	listen(s,5);
-	init_list(&sock_list);
+	retval = cfgParms.getValueInt(&port, CCfgFileParms::BASIC, (char*)"myCmdPort", 0);
+	if (retval == -1) {
+		//默认参数，不接受命令
+		iCmdSock = 0;
+	}
+	else {
+		iCmdSock = socket(AF_INET, SOCK_DGRAM, 0);
+		if (iCmdSock == SOCKET_ERROR) {
+			iCmdSock = 0;
+		}
+		else {
+			local_cmd_addr.sin_family = AF_INET;
+			local_cmd_addr.sin_addr.S_un.S_addr = htonl(INADDR_ANY);
+			local_cmd_addr.sin_port = htons(port);
+			if (bind(iCmdSock, (sockaddr*)& local_cmd_addr, sizeof(sockaddr_in)) == SOCKET_ERROR) {
+				closesocket(iCmdSock);
+				iCmdSock = 0;
+			}
+		}
+	}
+
 	//设置套接字为非阻塞态
 	arg = 1;
 	ioctlsocket(sock, FIONBIO, &arg);
-	insert_list(sock, &sock_list);
+	if (iCmdSock > 0) {
+		arg = 1;
+		ioctlsocket(iCmdSock, FIONBIO, &arg);
+	}
 
 	initTimer();
 	while (1) {
 		FD_ZERO(&readfds);
-		FD_ZERO(&writefds);
-		FD_ZERO(&exceptfds);
-		make_fdlist(&sock_list, &readfds);
 		//采用了基于select机制，不断发送测试数据，和接收测试数据，也可以采用多线程，一线专发送，一线专接收的方案
 		//设定超时时间
-		setSelectTimeOut(&timeout, &sBasicTimer);
-		retval = select(0, &readfds, &writefds, &exceptfds, &timeout);
-		if (true == isTimeOut(&sBasicTimer)) {
-			//超时，没啥事可做
-			continue;
-			
+		if (sock > 0) {
+			FD_SET(sock, &readfds);
 		}
-		for (i = 0; i < 64; i++) {
-			if (sock_list.sock_array[i] == 0)
+		if (iCmdSock > 0) {
+			FD_SET(iCmdSock, &readfds);
+		}
+		setSelectTimeOut(&timeout, &sBasicTimer);
+		retval = select(0, &readfds, NULL, NULL, &timeout);
+		if (true == isTimeOut(&sBasicTimer)) {
+			count++;
+			switch (iWorkMode / 10) {
+				//发送|打印：发送（0，等待键盘输入；1，自动）|打印（0，定期打印统计；1，每次收发打印细节）
+			case 0:
+				if (_kbhit()) {
+					cout << endl << "从哪个接口发送？";
+					cin >> port;
+					cout << "输入字符串：";
+					cin >> buf;
+					retval = (int)strlen(buf) + 1;
+					if(lowerMode[port] == 0){
+						//upper 字节数组转下层位数组
+						iSndRetval = ByteArrayToBitArray(sendbuf, MAX_BUFFER_SIZE, buf, retval);
+						iSndRetval = sendto(sock, sendbuf, iSndRetval, 0, (sockaddr*)&(lower_addr[port]), sizeof(sockaddr_in));
+					}else {
+						//upper 字节数组直接发送
+						iSndRetval = sendto(sock, buf, retval , 0, (sockaddr*) & (lower_addr[port]), sizeof(sockaddr_in));
+						iSndRetval = iSndRetval * 8; //换算成位
+					}
+					//发送
+					if (iSndRetval > 0) {
+						iSndTotalCount++;
+						iSndTotal += iSndRetval;
+					}
+				}
+				break;
+			case 1:
+				//超时，没事可做
+				break;
+			}
+			switch (iWorkMode % 10){
+			case 0:
+				//只定期打印统计数据
+				if (count % 50 == 0) {
+					spin++;
+					switch (spin) {
+					case 1:
+						printf("\r-");
+						break;
+					case 2:
+						printf("\r\\");
+						break;
+					case 3:
+						printf("\r|");
+						break;
+					case 4:
+						printf("\r/");
+						spin = 0;
+						break;
+					}
+					printf("共转发 %d 位，%d 次;递交 %d 位，%d 次；发送 %d 位, %d 次 发送错误 %d 次,不明来源 %d 次__________________________", iRcvForward, iRcvForwardCount, iRcvToUpper, iRcvToUpperCount, iSndTotal, iSndTotalCount, iSndErrorCount,iRcvUnknownCount);
+				}
+				break;
+			case 1:
+
+				break;
+			default:
+				break; 
+			}
+			continue;
+		}
+		if (FD_ISSET(sock, &readfds)) {
+			for (i = 0; i < 8; i++) {
+				buf[i] = 0; //正常情况没有必要，这里只是为了便于调试检查是否有正确的数据接收
+			}
+			len = sizeof(sockaddr_in);
+			retval = recvfrom(sock, buf, MAX_BUFFER_SIZE, 0,(sockaddr*)&remote_addr,&len); //超过这个大小就不能愉快地玩耍了，因为缓冲不够大
+			if (retval == 0) {
+				closesocket(sock);
+				sock = 0;
+				printf("close a socket\n");
 				continue;
-			sock = sock_list.sock_array[i];
-			if (FD_ISSET(sock, &readfds)) {
-				for (i = 0; i < 8; i++) {
-					buf[i] = 0; //正常情况没有必要，这里只是为了便于检查是否有正确的数据接收
-				}
-				len = sizeof(sockaddr_in);
-				retval = recvfrom(sock, buf, MAX_BUFFER_SIZE, 0,(sockaddr*)&remote_addr,&len); //超过这个大小就不能愉快地玩耍了，因为缓冲不够大
-				if (retval == 0) {
-					closesocket(sock);
-					printf("close a socket\n");
-					delete_list(sock, &sock_list);
+			}
+			else if (retval == -1) {
+				retval = WSAGetLastError();
+				if (retval == WSAEWOULDBLOCK || retval == WSAECONNRESET)
 					continue;
-				}
-				else if (retval == -1) {
-					retval = WSAGetLastError();
-					if (retval == WSAEWOULDBLOCK || retval == WSAECONNRESET)
-						continue;
-					closesocket(sock);
-					printf("close a socket\n");
-					delete_list(sock, &sock_list);
-					continue;
-				}
-				//收到数据后,通过源头判断是上层还是下层数据
-				if (remote_addr.sin_port == upper_addr.sin_port) {
-					//IP地址也应该比对的，偷个懒
-					//是高层数据，从接口0发出去
+				closesocket(sock);
+				sock = 0;
+				printf("close a socket\n");
+				continue;
+			}
+			//收到数据后,通过源头判断是上层还是下层数据
+			if (remote_addr.sin_port == upper_addr.sin_port) {
+				//IP地址也应该比对的，偷个懒
+				//是高层数据，从接口0发出去
+				if(lowerMode[0] == 0){
 					//先转换成bit数组
-					for (i = 0; i < retval; i++) {
-						//每次编码8位
-						code(buf[i], sendbuf + i * 8, 8);
-					}					//发送
-					sendto(sock,sendbuf,retval*8,0,(sockaddr*)&(lower_addr[0]),sizeof(sockaddr_in));
-					printf("\n收到上层数据 %d 位，发送到接口0\n", retval * 8);
+					iSndRetval = ByteArrayToBitArray(sendbuf, MAX_BUFFER_SIZE,buf, retval );
+					//发送
+					iSndRetval = sendto(sock,sendbuf, iSndRetval,0,(sockaddr*)&(lower_addr[0]),sizeof(sockaddr_in));
 				}
 				else {
-					if (remote_addr.sin_port == lower_addr[0].sin_port) {
-						//接口0的数据，转发到接口1
-						sendto(sock, buf, retval, 0, (sockaddr*)& (lower_addr[1]), sizeof(sockaddr_in));
-						printf("\n收到接口0数据 %d 位，发送到接口1\n", retval);
-					}else if(remote_addr.sin_port == lower_addr[1].sin_port){
-						//接口1的数据，向上递交
-						//先转换成字节数组，再向上递交
-						for (i = 0; i < retval; i += 8) {
-							sendbuf[i / 8] = (char)decode(buf + i, 8);
-						}
-						sendto(sock, sendbuf, retval/8, 0, (sockaddr*)& (upper_addr), sizeof(sockaddr_in));
-						printf("\n收到接口1数据 %d 字节，递交给上层\n", retval / 8);
-					}
+					//下层是字节接口，直接发送
+					iSndRetval = sendto(sock, buf, retval, 0, (sockaddr*) & (lower_addr[0]), sizeof(sockaddr_in));
+					iSndRetval = iSndRetval * 8;//换算成位
 				}
-				//打印？
-				printf("\n______________________________\n");
-				for (i = 0; i < retval; i++) {
-					linecount++;
-					if (buf[i] == 0) {
-						printf("0 ");
+				if (iSndRetval <= 0) {
+					iSndErrorCount++;
+				}
+				else {
+					iSndTotal += iSndRetval;
+					iSndTotalCount++;
+				}
+				//printf("\n收到上层数据 %d 位，发送到接口0\n", retval * 8);
+				switch (iWorkMode % 10) {
+				case 1:
+					//打印收发数据
+					printf("\n共发送: %d 位, %d 次,转发 %d 位，%d 次;递交 %d 位，%d 次，发送错误 %d 次__________________________\n", iSndTotal, iSndTotalCount, iRcvForward, iRcvForwardCount, iRcvToUpper, iRcvToUpperCount, iSndErrorCount);
+					print_data_bit(buf, retval,1);
+					break;
+				case 0:
+					break;
+				}
+			}
+			else {
+				if (remote_addr.sin_port == lower_addr[0].sin_port) {
+					//接口0的数据，转发到接口1
+					iRecvIntfNo = 0;
+					if (lowerMode[0] == lowerMode[1]) {
+						iSndRetval = sendto(sock, buf, retval, 0, (sockaddr*) & (lower_addr[1]), sizeof(sockaddr_in));
+						if (lowerMode[0] == 1) {
+							iSndRetval = iSndRetval * 8;//换算成位
+						}
 					}
 					else {
-						printf("1 ");
+						if (lowerMode[0] == 1) {
+							//byte to bit
+							iSndRetval = ByteArrayToBitArray(sendbuf, MAX_BUFFER_SIZE, buf, retval);
+							iSndRetval = sendto(sock, sendbuf,iSndRetval , 0, (sockaddr*) & (upper_addr), sizeof(sockaddr_in));
+						}
+						else {
+							//bit to byte
+							iSndRetval = BitArrayToByteArray(buf, retval, sendbuf, MAX_BUFFER_SIZE);
+							iSndRetval = sendto(sock, sendbuf, iSndRetval, 0, (sockaddr*) & (upper_addr), sizeof(sockaddr_in));
+							iSndRetval = iSndRetval * 8;//换算成位
+						}
 					}
-					if (linecount > 40) {
-						printf("\n");
-						linecount = 0;
+					if (iSndRetval <= 0) {
+						iSndErrorCount++;
 					}
+					else {
+						iRcvForward += iSndRetval;
+						iRcvForwardCount++;
+					}
+				}
+				else if(remote_addr.sin_port == lower_addr[1].sin_port){
+					//接口1的数据，向上递交
+					iRecvIntfNo = 1;
+					if (lowerMode[1] == 0) {
+						//先转换成字节数组，再向上递交
+						iSndRetval = BitArrayToByteArray(buf, retval, sendbuf, MAX_BUFFER_SIZE);
+						iSndRetval = sendto(sock, sendbuf, iSndRetval, 0, (sockaddr*) & (upper_addr), sizeof(sockaddr_in));
+						iSndRetval = iSndRetval * 8;//换算成位
+					}
+					else {
+						iSndRetval = sendto(sock, buf, retval, 0, (sockaddr*) & (upper_addr), sizeof(sockaddr_in));
+						iSndRetval = iSndRetval * 8;//换算成位
+					}
+					if (iSndRetval <= 0) {
+						iSndErrorCount++;
+					}
+					else {
+						iRcvToUpper += iSndRetval;
+						iRcvToUpperCount++;
+					}
+					//printf("\n收到接口1数据 %d 字节，递交给上层\n", retval / 8);
+				}
+				else {
+					//不明来源，打印提示
+					iRcvUnknownCount++;
+					switch (iWorkMode % 10) {
+					case 1:
+						//打印收发数据
+						printf("\n不明来源数据 %d 次__________________________\n",iRcvUnknownCount);
+						print_data_bit(buf, retval, 1);
+						break;
+					case 0:
+						break;
+					}
+					continue;
+				}
+				//打印
+				switch (iWorkMode % 10) {
+				case 1:
+					//打印收发数据
+					printf("\n共发送: %d 位, %d 次,转发 %d 位，%d 次;递交 %d 位，%d 次，发送错误 %d 次__________________________\n", iSndTotal, iSndTotalCount, iRcvForward, iRcvForwardCount, iRcvToUpper, iRcvToUpperCount, iSndErrorCount);
+					print_data_bit(buf, retval,lowerMode[iRecvIntfNo]);
+					break;
+				case 0:
+					break;
 				}
 			}
 
 		}
+		if (iCmdSock == 0)
+			continue;
+		if (FD_ISSET(iCmdSock, &readfds)) {
+			retval = recv(iCmdSock, buf, MAX_BUFFER_SIZE, 0);
+			if (retval <= 0) {
+				continue;
+			}
+			if (strncmp(buf, "exit", 5) == 0) {
+				break;
+			}
+		}
 	}
 	free(sendbuf);
 	free(buf);
-	closesocket(sock);
+	if (sock > 0)
+		closesocket(sock);
+	if (iCmdSock)
+		closesocket(iCmdSock);
 	WSACleanup();
 	return 0;
 }
