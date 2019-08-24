@@ -514,35 +514,59 @@ int main(int argc, char* argv[])
 				}
 			}
 			else {
+				//下层收到的数据
 				if (remote_addr.sin_port == lower_addr[0].sin_port) {
 					//接口0的数据，转发到接口1
 					iRecvIntfNo = 0;
-					if (lowerMode[0] == lowerMode[1]) {
-						iSndRetval = sendto(sock, buf, retval, 0, (sockaddr*) & (lower_addr[1]), sizeof(sockaddr_in));
-						if (lowerMode[0] == 1) {
-							iSndRetval = iSndRetval * 8;//换算成位
+					if (lowerNumber > 1) {
+						if (lowerMode[0] == lowerMode[1]) {
+							iSndRetval = sendto(sock, buf, retval, 0, (sockaddr*) & (lower_addr[1]), sizeof(sockaddr_in));
+							if (lowerMode[0] == 1) {
+								iSndRetval = iSndRetval * 8;//换算成位
+							}
+						}
+						else {
+							if (lowerMode[0] == 1) {
+								//byte to bit
+								iSndRetval = ByteArrayToBitArray(sendbuf, MAX_BUFFER_SIZE, buf, retval);
+								iSndRetval = sendto(sock, sendbuf, iSndRetval, 0, (sockaddr*) & (lower_addr[1]), sizeof(sockaddr_in));
+							}
+							else {
+								//bit to byte
+								iSndRetval = BitArrayToByteArray(buf, retval, sendbuf, MAX_BUFFER_SIZE);
+								iSndRetval = sendto(sock, sendbuf, iSndRetval, 0, (sockaddr*) & (lower_addr[1]), sizeof(sockaddr_in));
+								iSndRetval = iSndRetval * 8;//换算成位
+							}
+						}
+						if (iSndRetval <= 0) {
+							iSndErrorCount++;
+						}
+						else {
+							iRcvForward += iSndRetval;
+							iRcvForwardCount++;
 						}
 					}
 					else {
-						if (lowerMode[0] == 1) {
-							//byte to bit
-							iSndRetval = ByteArrayToBitArray(sendbuf, MAX_BUFFER_SIZE, buf, retval);
-							iSndRetval = sendto(sock, sendbuf,iSndRetval , 0, (sockaddr*) & (upper_addr), sizeof(sockaddr_in));
-						}
-						else {
-							//bit to byte
+						//向上递交
+						if (lowerMode[0] == 0) {
+							//先转换成字节数组，再向上递交
 							iSndRetval = BitArrayToByteArray(buf, retval, sendbuf, MAX_BUFFER_SIZE);
 							iSndRetval = sendto(sock, sendbuf, iSndRetval, 0, (sockaddr*) & (upper_addr), sizeof(sockaddr_in));
 							iSndRetval = iSndRetval * 8;//换算成位
 						}
+						else {
+							iSndRetval = sendto(sock, buf, retval, 0, (sockaddr*) & (upper_addr), sizeof(sockaddr_in));
+							iSndRetval = iSndRetval * 8;//换算成位
+						}
+						if (iSndRetval <= 0) {
+							iSndErrorCount++;
+						}
+						else {
+							iRcvToUpper += iSndRetval;
+							iRcvToUpperCount++;
+						}
 					}
-					if (iSndRetval <= 0) {
-						iSndErrorCount++;
-					}
-					else {
-						iRcvForward += iSndRetval;
-						iRcvForwardCount++;
-					}
+
 				}
 				else if(remote_addr.sin_port == lower_addr[1].sin_port){
 					//接口1的数据，向上递交
