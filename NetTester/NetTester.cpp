@@ -247,7 +247,7 @@ int main(int argc, char* argv[])
 	}
 	else if (argc == 3) {
 		s1 = argv[1];
-		s2 = "NET";
+		s2 = "LNK";
 		s3 = argv[2];
 	}
 	else {
@@ -348,11 +348,10 @@ int main(int argc, char* argv[])
 			return 0;
 		}
 		lower_addr[i].sin_port = htons(port);
-		//低层接口是Byte或者是bit
+		//低层接口是Byte或者是bit,默认是bit
 		retval = cfgParms.getValueInt(&(lowerMode[i]), CCfgFileParms::LOWER, (char*)"lowerMode", i);
 		if (0 > retval) {
-			printf("参数错误\n");
-			return 0;
+			lowerMode[i] = 0;
 		}
 	}
 	retval = cfgParms.getValueInt(&port, CCfgFileParms::BASIC, (char*)"myCmdPort", 0);
