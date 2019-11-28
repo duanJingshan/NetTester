@@ -24,6 +24,9 @@ int iRcvToUpper = 0;      //从低层递交高层数据总量
 int iRcvToUpperCount = 0;  //从低层递交高层数据总次数
 int iRcvUnknownCount = 0;  //收到不明来源数据总次数
 //start------不那么华丽的分割线---------------------------------------------------------
+void TimeOut();
+void RecvfromLower(U8* buf, int len, int ifNo);
+void RecvfromUpper(U8* buf, int len);
 int SendtoUpper(U8* buf, int len);
 int SendtoLower(U8* buf, int len, int ifNo);
 void print_data_bit(U8* A, int length, int iMode);
